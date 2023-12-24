@@ -3,20 +3,11 @@ import bcrypt from 'bcrypt';
 import { NextFunction, Request, Response } from 'express';
 import { validationResult } from 'express-validator';
 import jwt from 'jsonwebtoken';
+import { generateJsonWebToken } from '../helpers/generateJsonWebToken';
 import UserModel from '../models/User';
 
-interface DecodedToken {
-   userId: string;
-   email: string;
-}
-
-// Helpers
-const generateToken = (payload: any, secret: string, expiresIn: string) => {
-   return jwt.sign(payload, secret, { expiresIn });
-};
-
 // ********************** Registration ********************** //
-export const createUser = async (
+export const Registration = async (
    req: Request,
    res: Response,
    next: NextFunction
@@ -31,7 +22,22 @@ export const createUser = async (
 
       const { name, email, password, role, image, designation } = req.body;
 
+      const userExists = await UserModel.findOne({ email });
+
+      if (userExists) {
+         res.status(422).json({
+            success: false,
+            error: 'User with the same email already exists. Please choose a different email.'
+         });
+      }
+
       const hashedPassword = await bcrypt.hash(password, 10);
+
+      const refreshToken = generateJsonWebToken(
+         { name: name, email: email },
+         process.env.JWT_SECRET_REFRESH as string,
+         '7d'
+      );
 
       const userModel = new UserModel({
          name,
@@ -39,26 +45,26 @@ export const createUser = async (
          password: hashedPassword,
          role,
          image,
-         designation
+         designation,
+         refreshToken
       });
 
       const savedUser = await userModel.save();
 
-      const accessToken = generateToken(
+      const accessToken = generateJsonWebToken(
          { userId: savedUser._id, email: savedUser.email },
-         process.env.JWT_SECRET as string,
+         process.env.JWT_SECRET_ACCESS as string,
          '1h'
       );
-      const refreshToken = generateToken(
-         { userId: savedUser._id, email: savedUser.email },
-         process.env.JWT_SECRET_REFRESH as string,
-         '7d'
-      );
 
+      // Res with http only cookie token
+      res.cookie('jwt', refreshToken, {
+         httpOnly: true,
+         maxAge: 24 * 60 * 60 * 1000
+      });
       res.json({
          success: true,
          accessToken,
-         refreshToken,
          user: {
             name: savedUser.name,
             email: savedUser.email,
@@ -73,7 +79,7 @@ export const createUser = async (
 };
 
 // ********************** Login ********************** //
-export const login = async (
+export const Login = async (
    req: Request,
    res: Response,
    next: NextFunction
@@ -99,21 +105,28 @@ export const login = async (
       }
 
       // (access token and refresh token)
-      const accessToken = generateToken(
+      const accessToken = generateJsonWebToken(
          { userId: user._id, email: user.email },
-         process.env.JWT_SECRET as string,
+         process.env.JWT_SECRET_ACCESS as string,
          '1h'
       );
-      const refreshToken = generateToken(
-         { userId: user._id, email: user.email },
+      const refreshToken = generateJsonWebToken(
+         { name: user.name, email: user.email },
          process.env.JWT_SECRET_REFRESH as string,
          '7d'
       );
 
+      // Update the user document with the new refresh token
+      await UserModel.updateOne({ email }, { refreshToken });
+
+      // Res with http only cookie token
+      res.cookie('jwt', refreshToken, {
+         httpOnly: true,
+         maxAge: 24 * 60 * 60 * 1000
+      });
       res.json({
          success: true,
          accessToken,
-         refreshToken,
          user: {
             name: user.name,
             email: user.email,
@@ -127,19 +140,32 @@ export const login = async (
 };
 
 // ********************** Token Refresh ********************** //
-export const refreshAccessToken = async (
+export const RefreshAccessToken = async (
    req: Request,
    res: Response,
    next: NextFunction
 ): Promise<void | Response<any, Record<string, any>>> => {
    try {
-      const { refreshToken } = req.body;
+      const cookies = req.cookies;
 
-      // Check if a refresh token is provided
-      if (!refreshToken) {
-         return res
-            .status(400)
-            .json({ success: false, error: 'Refresh token is required' });
+      if (!cookies?.jwt) {
+         return res.status(401).json({
+            success: false,
+            error: 'Unauthorized: Missing refresh token'
+         });
+      }
+
+      const refreshToken = cookies.jwt;
+
+      // Find the user
+      const foundUser = await UserModel.findOne({ refreshToken });
+
+      // Check if it's a valid user
+      if (!foundUser) {
+         return res.status(403).json({
+            success: false,
+            error: 'Forbidden access: User not found'
+         });
       }
 
       // Verify the refresh token
@@ -147,22 +173,23 @@ export const refreshAccessToken = async (
          refreshToken,
          process.env.JWT_SECRET_REFRESH as string,
          (err: any, decoded: any) => {
-            if (err) {
-               return res
-                  .status(401)
-                  .json({ success: false, error: 'Invalid refresh token' });
+            if (err || foundUser.email !== decoded.email) {
+               return res.status(403).json({
+                  success: false,
+                  error: 'Forbidden access: Invalid refresh token'
+               });
             }
 
             // Extract userId and email from the decoded refresh token
-            const { userId, email } = decoded as {
-               userId: string;
+            const { name, email } = decoded as {
+               name: string;
                email: string;
             };
 
             // Generate a new access token
-            const newAccessToken = generateToken(
-               { userId, email },
-               process.env.JWT_SECRET as string,
+            const newAccessToken = generateJsonWebToken(
+               { name, email },
+               process.env.JWT_SECRET_ACCESS as string,
                '1h'
             );
 
@@ -178,8 +205,43 @@ export const refreshAccessToken = async (
    }
 };
 
+// ********************** Get User Profile ********************** //
+export const GetUserProfile = async (
+   req: Request,
+   res: Response,
+   next: NextFunction
+): Promise<void | Response<any, Record<string, any>>> => {
+   const userId = req.params.id;
+
+   try {
+      // Find the user by ID
+      const user = await UserModel.findById(userId);
+
+      // User not found
+      if (!user) {
+         return res
+            .status(404)
+            .json({ success: false, error: 'User not found' });
+      }
+
+      // Return user profile
+      res.json({
+         success: true,
+         user: {
+            name: user.name,
+            email: user.email,
+            image: user.image,
+            designation: user.designation
+         }
+      });
+   } catch (error) {
+      console.error('Error getting user profile:', error);
+      next(error);
+   }
+};
+
 // ********************** Update Profile ********************** //
-export const updateUser = async (
+export const UpdateUser = async (
    req: Request,
    res: Response,
    next: NextFunction
@@ -225,7 +287,7 @@ export const updateUser = async (
 };
 
 // ********************** Change Password ********************** //
-export const changePassword = async (
+export const ChangePassword = async (
    req: Request,
    res: Response,
    next: NextFunction
@@ -268,9 +330,9 @@ export const changePassword = async (
       await user.save();
 
       // (access token)
-      const accessToken = generateToken(
+      const accessToken = generateJsonWebToken(
          { userId: user._id, email: user.email },
-         process.env.JWT_SECRET as string,
+         process.env.JWT_SECRET_ACCESS as string,
          '1h'
       );
 
@@ -290,7 +352,7 @@ export const changePassword = async (
 };
 
 // ********************** All Users ********************** //
-export const getAllUsers = async (
+export const GetAllUsers = async (
    req: Request,
    res: Response,
    next: NextFunction
@@ -306,7 +368,7 @@ export const getAllUsers = async (
 };
 
 // ********************** Delete User ********************** //
-export const deleteUser = async (
+export const DeleteUser = async (
    req: Request,
    res: Response,
    next: NextFunction

@@ -3,13 +3,14 @@
 import express from 'express';
 import { body } from 'express-validator';
 import {
-   changePassword,
-   createUser,
-   deleteUser,
-   getAllUsers,
-   login,
-   refreshAccessToken,
-   updateUser
+   ChangePassword,
+   DeleteUser,
+   GetAllUsers,
+   GetUserProfile,
+   Login,
+   RefreshAccessToken,
+   Registration,
+   UpdateUser
 } from '../controllers/userController';
 
 const router = express.Router();
@@ -57,12 +58,13 @@ const changePasswordValidation = [passwordValidation, newPasswordValidation];
 // Delete User Route Validation
 const deleteUserValidation = [emailValidation, passwordValidation];
 
-router.get('/all', getAllUsers);
-router.post('/create', createUserValidation, createUser);
-router.post('/login', loginValidation, login);
-router.put('/update/:id', updateUserValidation, updateUser);
-router.post('/change-password/:id', changePasswordValidation, changePassword);
-router.delete('/delete', deleteUserValidation, deleteUser);
-router.post('/refresh-token', refreshAccessToken);
+router.post('/create', createUserValidation, Registration);
+router.post('/login', loginValidation, Login);
+router.post('/refresh-token', RefreshAccessToken);
+router.post('/change-password/:id', changePasswordValidation, ChangePassword);
+router.get('/all', GetAllUsers);
+router.post('/profile/:id', GetUserProfile);
+router.put('/update/:id', updateUserValidation, UpdateUser);
+router.delete('/delete', deleteUserValidation, DeleteUser);
 
 export default router;

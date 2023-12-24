@@ -23,5 +23,5 @@ createRoutes(app);
 app.use(errorHandler);
 
 app.listen(PORT, () => {
-   console.log(`BlackBoard Backend running on port ${PORT}`);
+   console.log(`Backend server running on port ${PORT}`);
 });
